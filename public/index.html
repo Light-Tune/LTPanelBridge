@@ -1,0 +1,1975 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>LT Ayarlari</title>
+<!-- No external CDN dependency anymore (Bootstrap + bootstrap-icons removed).
+     Theme/icons are now fully self-contained, matching PZ Pulse's zero-
+     dependency web panel approach - also removes the standing risk of
+     Bootstrap's reserved class names (.row etc.) colliding with ours. -->
+<style>
+    /* Palette matches PZ Pulse's own web panel: neutral flat gray/black
+       (no blue tint), no gradients or glow - mirrors the game's own UI
+       chrome instead of a generic "dark mode" template. Variable NAMES are
+       kept as before so every rule below still works unchanged; only the
+       values moved. */
+    :root {
+        color-scheme: dark;
+        --bg: #1c1c1c;
+        --panel: #0f0f0f;
+        --panel-header: #161616;
+        --border: #3a3a3a;
+        --text: #e2e2e2;
+        --muted: #8c8c8c;
+        --accent: #d9a441;
+        --ok: #6fae4f;
+        --bad: #cf4a3c;
+    }
+    * { box-sizing: border-box; }
+    html {
+        background: var(--bg);
+    }
+    body {
+        margin: 0;
+        padding: 0;
+        color: var(--text);
+        font-family: "Corbel", "Segoe UI", system-ui, sans-serif;
+        position: relative;
+        z-index: 0;
+        overflow-x: hidden;
+    }
+    /* PZ Pulse-style scrollbars - dark track, muted thumb, no accent glow. */
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: #111; }
+    ::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 0; }
+    ::-webkit-scrollbar-thumb:hover { background: #4a4a4a; }
+    header {
+        padding: 14px 24px 8px;
+    }
+    h1 {
+        font-size: 17px;
+        margin: 0 0 4px;
+        letter-spacing: 0.02em;
+    }
+    .sub {
+        color: var(--muted);
+        font-size: 12px;
+    }
+    /* #board has no height cap - the page grows downward with content
+       (unlimited scroll) instead of being clipped to the viewport.
+       LT FIX (2nd pass - "panel sag tarafa tasiyor"): the previous fix gave
+       #board "width: max-content" so it could scroll horizontally instead of
+       pushing <body> wide. That masked the real bug instead of fixing it:
+       #board's width was max-content (sized FROM its columns) while
+       applyColumnWidths() below computed each column's pixel width FROM
+       board.clientWidth - a circular measurement that drifts wider on every
+       resize/layout pass, especially with colFractions restored from
+       localStorage after a window-width change. #board is now a hard
+       "width: 100%" of #boardWrap - its width comes from its PARENT, not
+       from its children, which breaks the circularity - and overflow-x is
+       hidden as a hard backstop so the page can never grow sideways, only
+       downward. */
+    #boardWrap {
+        position: relative;
+        padding: 0 24px 24px;
+        width: 100%;
+        max-width: 100%;
+        overflow-x: hidden;
+    }
+    #board {
+        display: flex;
+        flex-direction: row;
+        align-items: stretch;
+        gap: 16px;
+        min-height: 300px;
+        width: 100%;
+        max-width: 100%;
+        margin: 0 auto;
+        overflow: hidden;
+    }
+    .lt-col {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        min-width: 0;
+        flex: 0 0 auto;
+    }
+    .lt-col.drag-over-col {
+        outline: 2px dashed var(--accent);
+        outline-offset: 2px;
+        border-radius: 8px;
+    }
+    .panel {
+        min-width: 0;
+        min-height: 90px;
+        max-height: 900px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 0;
+        overflow: auto;
+        resize: vertical;
+        display: flex;
+        flex-direction: column;
+    }
+    .panel.drag-over {
+        outline: 2px dashed var(--accent);
+        outline-offset: -2px;
+    }
+    .panel-header {
+        background: var(--panel-header);
+        border-bottom: 1px solid var(--border);
+        padding: 6px 10px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        cursor: grab;
+        user-select: none;
+        flex: 0 0 auto;
+    }
+    .panel-header:active { cursor: grabbing; }
+    /* Automatic gutter between the 3 columns - dragging these resizes the
+       column widths (persisted), they never overlap a panel or the page
+       edge since they're bounded by the board itself. Vertical panel
+       height is a separate, native "resize: vertical" handle on .panel
+       (bottom-right corner of each panel) - no custom JS needed for that. */
+    .divider {
+        position: absolute;
+        z-index: 10;
+    }
+    .divider-v {
+        top: 0;
+        bottom: 0;
+        width: 16px;
+        margin-left: -8px;
+        cursor: col-resize;
+    }
+    .divider:hover, .divider.active {
+        background: rgba(230, 162, 60, 0.2);
+    }
+    .panel-title {
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--muted);
+    }
+    .panel-body {
+        padding: 10px 12px;
+        overflow: auto;
+        flex: 1 1 auto;
+        font-size: 12px;
+    }
+    .gear-btn {
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--muted);
+        border-radius: 4px;
+        width: 24px;
+        height: 24px;
+        line-height: 1;
+        cursor: pointer;
+        font-size: 13px;
+    }
+    .gear-btn:hover { color: var(--text); border-color: var(--accent); }
+    .ico { display: inline-block; vertical-align: -2px; transition: transform 0.3s ease; }
+    .gear-btn:hover .ico { transform: rotate(75deg); }
+    .status-line {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 13px;
+    }
+    .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--bad);
+        flex: 0 0 auto;
+    }
+    .dot.ok { background: var(--ok); }
+    .dot.warn { background: var(--accent); }
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+    }
+    th, td {
+        text-align: left;
+        padding: 6px 8px;
+        font-size: 12px;
+        border-bottom: 1px solid var(--border);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        position: relative;
+    }
+    th {
+        color: var(--muted);
+        font-weight: 600;
+        text-transform: uppercase;
+        font-size: 11px;
+        letter-spacing: 0.04em;
+    }
+    tr:last-child td { border-bottom: none; }
+    .col-resizer {
+        position: absolute;
+        right: -3px;
+        top: 0;
+        width: 6px;
+        height: 100%;
+        cursor: col-resize;
+        z-index: 2;
+    }
+    .col-resizer:hover, .col-resizer.active { background: var(--accent); opacity: 0.4; }
+    .empty {
+        color: var(--muted);
+        padding: 20px;
+        text-align: center;
+        font-size: 13px;
+    }
+    .admin-tag {
+        color: var(--accent);
+        font-size: 11px;
+        border: 1px solid var(--accent);
+        border-radius: 4px;
+        padding: 1px 6px;
+        margin-left: 6px;
+    }
+    /* Online/offline indicator in the players table. */
+    .status-dot {
+        display: inline-block;
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: #d9534f;
+    }
+    .status-dot.online { background: #4caf50; }
+    .status-dot.offline { background: #d9534f; }
+    /* Icon action buttons. Green = active/ongoing, red = inactive; one-shot
+       actions flash green briefly (see flashAction in the script). */
+    .row-actions { white-space: nowrap; }
+    .act-btn {
+        background: transparent;
+        border: 1px solid currentColor;
+        border-radius: 4px;
+        width: 24px;
+        height: 24px;
+        line-height: 1;
+        padding: 0;
+        margin-right: 3px;
+        cursor: pointer;
+        font-size: 12px;
+        transition: color 0.2s ease, border-color 0.2s ease;
+    }
+    .act-btn.act-off { color: #d9534f; }
+    .act-btn.act-on { color: #4caf50; }
+    .act-btn:disabled { opacity: 0.35; cursor: default; }
+    .act-btn:not(:disabled):hover { filter: brightness(1.4); }
+    /* Health bands in the damage log, per spec:
+       100-75 green, 75-50 yellow, 50-25 light red, 25-0 dark red, 0 = OLU. */
+    .hp-green { color: #4caf50; }
+    .hp-yellow { color: #e6c34a; }
+    .hp-lightred { color: #ef7b6f; }
+    .hp-darkred { color: #a02b21; font-weight: 600; }
+    .hp-dead { color: #ffffff; font-weight: 700; letter-spacing: 0.5px; }
+    /* Market admin panel form controls. */
+    .ma-input {
+        flex: 1;
+        min-width: 0;
+        background: var(--panel);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 4px 6px;
+        font-family: inherit;
+        font-size: 12px;
+    }
+    .ma-sub {
+        margin: 14px 0 6px;
+        font-size: 12px;
+        color: var(--accent);
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 4px;
+    }
+    .ma-tier-label { min-width: 62px; font-size: 12px; color: var(--muted); }
+    /* "x3" marker on a collapsed repeat row. */
+    .repeat-badge {
+        color: var(--muted);
+        font-size: 11px;
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        padding: 0 4px;
+    }
+    .cause-tag {
+        font-size: 11px;
+        border-radius: 4px;
+        padding: 2px 8px;
+        display: inline-block;
+    }
+    .cause-PvP { background: #4a2020; color: #ff8a80; }
+    .cause-Zombi { background: #234a20; color: #8bff80; }
+    .cause-Mermi { background: #4a3d20; color: #ffd280; }
+    .cause-Cam { background: #204a4a; color: #80f0f0; }
+    .cause-Kesik { background: #4a2040; color: #ff80d0; }
+    .cause-Tirmik { background: #3a3a20; color: #e0e080; }
+    .cause-Dogal_Bilinmeyen { background: #333; color: var(--muted); }
+    .cause-ArKaza, .cause-Arac_Kazasi { background: #20304a; color: #80b3ff; }
+    .cause-default { background: #333; color: var(--muted); }
+    button.tp-btn {
+        background: var(--panel);
+        color: var(--accent);
+        border: 1px solid var(--accent);
+        border-radius: 4px;
+        padding: 4px 10px;
+        font-size: 12px;
+        cursor: pointer;
+    }
+    button.tp-btn:hover { background: var(--accent); color: #14161a; }
+    button.tp-btn:disabled { opacity: 0.5; cursor: default; }
+    button.clear-btn {
+        background: var(--panel);
+        color: var(--bad);
+        border: 1px solid var(--bad);
+        border-radius: 4px;
+        padding: 5px 12px;
+        font-size: 12px;
+        cursor: pointer;
+    }
+    button.clear-btn:hover { background: var(--bad); color: #14161a; }
+    .logToolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 8px;
+        gap: 8px;
+    }
+    .logToolbar select {
+        background: var(--panel);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 4px 8px;
+        font-size: 12px;
+    }
+    .logToolbar .limitLabel { color: var(--muted); font-size: 12px; margin-right: 6px; }
+    .controls-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 4px 0;
+    }
+    .controls-row .label { font-size: 13px; }
+    .controls-row .hint { color: var(--muted); font-size: 11px; margin-top: 2px; }
+    .switch {
+        position: relative;
+        width: 42px;
+        height: 24px;
+        display: inline-block;
+        flex: 0 0 auto;
+    }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+        position: absolute;
+        cursor: pointer;
+        inset: 0;
+        background: #3a3f47;
+        border-radius: 999px;
+        transition: 0.15s;
+    }
+    .slider::before {
+        content: "";
+        position: absolute;
+        width: 18px;
+        height: 18px;
+        left: 3px;
+        top: 3px;
+        background: white;
+        border-radius: 50%;
+        transition: 0.15s;
+    }
+    .switch input:checked + .slider { background: var(--ok); }
+    .switch input:checked + .slider::before { transform: translateX(18px); }
+    .switch input:disabled + .slider { opacity: 0.5; cursor: default; }
+
+    .overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.5);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 50;
+    }
+    .overlay.open { display: flex; }
+    .lt-popover {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        width: 340px;
+        max-height: 80vh;
+        overflow: auto;
+        padding: 16px;
+    }
+    .lt-popover h3 {
+        font-size: 13px;
+        margin: 0 0 8px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+    /* Named .lt-row, not .row - Bootstrap's grid system reserves ".row" and
+       forces "width: 100%" on every DIRECT CHILD of any ".row" element
+       (its ".row > *" column rule). Reusing that name on the checkbox
+       labels below stretched the checkboxes to the full row width and
+       wrapped the label text onto its own line - the skewed layout seen
+       in testing. */
+    .lt-popover .lt-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        padding: 4px 0;
+    }
+    .lt-popover input[type="text"] {
+        flex: 1;
+        background: var(--bg);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 6px 8px;
+        font-size: 12px;
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .chip {
+        background: var(--panel-header);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 3px 8px 3px 10px;
+        font-size: 12px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+    }
+    .chip button {
+        background: none;
+        border: none;
+        color: var(--muted);
+        cursor: pointer;
+        font-size: 12px;
+        padding: 0;
+        line-height: 1;
+    }
+    .chip button:hover { color: var(--bad); }
+    .lt-popover .footer {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 16px;
+    }
+    .lt-popover button.primary {
+        background: var(--accent);
+        color: #14161a;
+        border: none;
+        border-radius: 4px;
+        padding: 6px 14px;
+        font-size: 12px;
+        cursor: pointer;
+        font-weight: 600;
+    }
+    .lt-popover button.secondary {
+        background: transparent;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 6px 14px;
+        font-size: 12px;
+        cursor: pointer;
+    }
+
+    /* ---------- Animations / polish ---------- */
+    @keyframes ltFadeSlideIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes ltFadeIn {
+        from { opacity: 0; }
+        to   { opacity: 1; }
+    }
+    @keyframes ltPopIn {
+        from { opacity: 0; transform: scale(0.94) translateY(6px); }
+        to   { opacity: 1; transform: scale(1) translateY(0); }
+    }
+    .panel {
+        animation: ltFadeSlideIn 0.35s ease both;
+        transition: border-color 0.2s ease;
+    }
+    .panel:hover {
+        border-color: var(--muted);
+    }
+    .panel:nth-of-type(1) { animation-delay: 0.03s; }
+    .panel:nth-of-type(2) { animation-delay: 0.08s; }
+    .panel:nth-of-type(3) { animation-delay: 0.13s; }
+    .panel:nth-of-type(4) { animation-delay: 0.18s; }
+    .dot {
+        transition: background 0.2s ease;
+    }
+    .gear-btn, .tp-btn, .clear-btn, .lt-popover button, button {
+        transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+    }
+    .tp-btn:not(:disabled):hover, .clear-btn:hover, .gear-btn:hover, .lt-popover button.primary:hover {
+        transform: translateY(-1px);
+    }
+    .tp-btn:active, .clear-btn:active, .gear-btn:active {
+        transform: translateY(0);
+    }
+    .overlay {
+        transition: background 0.15s ease;
+    }
+    .overlay .lt-popover {
+        animation: ltPopIn 0.18s ease both;
+    }
+    tbody tr {
+        transition: background 0.15s ease;
+    }
+    tbody tr:hover {
+        background: rgba(255, 255, 255, 0.03);
+    }
+    .chip {
+        animation: ltFadeIn 0.15s ease both;
+    }
+    .switch .slider {
+        transition: background 0.2s ease;
+    }
+    .switch .slider::before {
+        transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+</style>
+</head>
+<body>
+    <header style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+        <div>
+            <h1>LT Ayarlari</h1>
+            <div class="sub">LightTune web paneli - sayfa 3 dikey sutuna bolunur, asagiya dogru sinirsiz uzayabilir. Bir panelin baslik cubugunu baska bir panelin/sutunun uzerine surukleyip yerini degistirebilir, sutunlar arasindaki dikey cizgileri surukleyip genislikleri, bir panelin sag-alt kosesinden tutup yuksekligini ayarlayabilirsin (tarayicida saklanir)</div>
+        </div>
+        <button class="gear-btn" id="globalSettingsBtn" title="Genel Ayarlar (Discord vb.)"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M6.4.3h3.2l.5 2a5 5 0 0 1 1.4.8l2-.7 1.6 2.8-1.5 1.4a5 5 0 0 1 0 1.6l1.5 1.4-1.6 2.8-2-.7a5 5 0 0 1-1.4.8l-.5 2H6.4l-.5-2a5 5 0 0 1-1.4-.8l-2 .7L.9 9.6l1.5-1.4a5 5 0 0 1 0-1.6L.9 5.2 2.5 2.4l2 .7a5 5 0 0 1 1.4-.8l.5-2zM8 5.3A2.7 2.7 0 1 0 8 10.7 2.7 2.7 0 0 0 8 5.3z"/></svg></button>
+    </header>
+
+    <div id="boardWrap">
+    <div id="board">
+        <div class="lt-col" data-col="1">
+            <div class="panel" data-id="status">
+                <div class="panel-header"><span class="panel-title">Baglanti Durumu</span></div>
+                <div class="panel-body">
+                    <div class="status-line"><span id="statusDot" class="dot"></span><span id="statusText">Kontrol ediliyor...</span></div>
+                </div>
+            </div>
+
+            <div class="panel" data-id="powers">
+                <div class="panel-header"><span class="panel-title">LT Gucleri</span></div>
+                <div class="panel-body">
+                    <div class="controls-row" data-feature="LTCameramanMode">
+                        <div>
+                            <div class="label">Kameraman Modu</div>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="cameramanToggle" onchange="onCameramanToggle(this)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div class="controls-row" data-feature="LTHideAdminTag">
+                        <div>
+                            <div class="label">Admin Etiketini Gizle</div>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="hideAdminTagToggle" onchange="onHideAdminTagToggle(this)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div class="controls-row" data-feature="LTMarket">
+                        <div>
+                            <div class="label">Market</div>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="marketToggle" onchange="onMarketToggle(this)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="lt-col" data-col="2">
+            <div class="panel" data-id="players">
+                <div class="panel-header">
+                    <span class="panel-title">Oyuncular</span>
+                    <button class="gear-btn" id="playersSettingsBtn" title="Gizleme ayarlari"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M6.4.3h3.2l.5 2a5 5 0 0 1 1.4.8l2-.7 1.6 2.8-1.5 1.4a5 5 0 0 1 0 1.6l1.5 1.4-1.6 2.8-2-.7a5 5 0 0 1-1.4.8l-.5 2H6.4l-.5-2a5 5 0 0 1-1.4-.8l-2 .7L.9 9.6l1.5-1.4a5 5 0 0 1 0-1.6L.9 5.2 2.5 2.4l2 .7a5 5 0 0 1 1.4-.8l.5-2zM8 5.3A2.7 2.7 0 1 0 8 10.7 2.7 2.7 0 0 0 8 5.3z"/></svg></button>
+                </div>
+                <div class="panel-body">
+                    <table id="playersTable">
+                        <thead>
+                            <tr>
+                                <th style="width:5%" title="Cevrimici / Cevrimdisi"></th>
+                                <th style="width:16%">Kullanici</th>
+                                <th style="width:9%">Grup</th>
+                                <th style="width:11%">Aktif LP</th>
+                                <th style="width:11%">Kelledeki LP</th>
+                                <th style="width:7%">Olum</th>
+                                <th style="width:11%">Yetki</th>
+                                <th style="width:16%">Konum</th>
+                                <th style="width:14%">Yonet</th>
+                            </tr>
+                        </thead>
+                        <tbody id="playerRows"></tbody>
+                    </table>
+                    <div id="emptyState" class="empty" style="display:none">Su an bagli oyuncu yok ya da oyun henuz veri yazmadi.</div>
+                </div>
+            </div>
+
+            <div class="panel" data-id="permaDeath" data-feature="LTPermaDeath">
+                <div class="panel-header">
+                    <span class="panel-title">Kalici Olum</span>
+                </div>
+                <div class="panel-body">
+                    <div class="controls-row">
+                        <div class="label">Ban esigi (kac olumde banlanir)</div>
+                        <input type="number" id="permaDeathThresholdInput" min="1" style="width:70px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;">
+                        <button class="tp-btn" title="Kaydet" onclick="savePermaDeathThreshold()"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M2 1h9.5L14 3.5V14a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1zm1 1v3h7V2H3zm1 6v5h6V8H4z"/></svg></button>
+                    </div>
+                    <div class="controls-row">
+                        <div class="label">Ek hak ver (kullaniciya ozel +1/-1)</div>
+                        <input type="text" id="permaDeathExtraUserInput" placeholder="Kullanici adi" style="width:110px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;">
+                        <button class="tp-btn" onclick="adjustPermaDeathExtra(document.getElementById('permaDeathExtraUserInput').value, 1, this)">+1</button>
+                        <button class="tp-btn" onclick="adjustPermaDeathExtra(document.getElementById('permaDeathExtraUserInput').value, -1, this)">-1</button>
+                    </div>
+                    <table id="permaDeathTable">
+                        <thead>
+                            <tr>
+                                <th style="width:26%">Kullanici</th>
+                                <th style="width:14%">Olum Sayisi</th>
+                                <th style="width:14%">Ek Hak</th>
+                                <th style="width:16%">Durum</th>
+                                <th style="width:30%"></th>
+                            </tr>
+                        </thead>
+                        <tbody id="permaDeathRows"></tbody>
+                    </table>
+                    <div id="permaDeathEmptyState" class="empty" style="display:none">Henuz veri yok.</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="lt-col" data-col="3">
+            <div class="panel" data-id="damageLog" data-feature="LTDamageLog">
+                <div class="panel-header">
+                    <span class="panel-title">Hasar Logu</span>
+                    <button class="gear-btn" id="dmgSettingsBtn" title="Gizleme ayarlari"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M6.4.3h3.2l.5 2a5 5 0 0 1 1.4.8l2-.7 1.6 2.8-1.5 1.4a5 5 0 0 1 0 1.6l1.5 1.4-1.6 2.8-2-.7a5 5 0 0 1-1.4.8l-.5 2H6.4l-.5-2a5 5 0 0 1-1.4-.8l-2 .7L.9 9.6l1.5-1.4a5 5 0 0 1 0-1.6L.9 5.2 2.5 2.4l2 .7a5 5 0 0 1 1.4-.8l.5-2zM8 5.3A2.7 2.7 0 1 0 8 10.7 2.7 2.7 0 0 0 8 5.3z"/></svg></button>
+                </div>
+                <div class="panel-body">
+                    <div class="logToolbar">
+                        <div>
+                            <span class="limitLabel">Goster:</span>
+                            <select id="logLimit" onchange="refreshDamageLog()">
+                                <option value="5">Son 5</option>
+                                <option value="10" selected>Son 10</option>
+                                <option value="20">Son 20</option>
+                                <option value="50">Son 50</option>
+                                <option value="all">Tumu</option>
+                            </select>
+                        </div>
+                        <button class="clear-btn" onclick="clearDamageLog(this)" title="Loglari Temizle"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M5.5 1h5l.5 1H14v1H2V2h3zM3 4h10l-.8 9.1a1 1 0 0 1-1 .9H4.8a1 1 0 0 1-1-.9L3 4zm3 2v6h1V6H6zm3 0v6h1V6H9z"/></svg></button>
+                    </div>
+                    <table id="damageTable">
+                        <thead>
+                            <tr>
+                                <th style="width:10%">Zaman</th>
+                                <th style="width:13%">Hedef</th>
+                                <th style="width:13%">Kimden</th>
+                                <th style="width:11%">Sebep</th>
+                                <th style="width:9%">Can %</th>
+                                <th style="width:22%">Aciklama</th>
+                                <th style="width:13%">Durum</th>
+                                <th style="width:9%"></th>
+                            </tr>
+                        </thead>
+                        <tbody id="damageRows"></tbody>
+                    </table>
+                    <div id="damageEmptyState" class="empty" style="display:none">Henuz hasar kaydi yok.</div>
+                </div>
+            </div>
+
+            <div class="panel" data-id="welcome" data-feature="LTWelcome">
+                <div class="panel-header"><span class="panel-title">Karsilama / Kurallar</span></div>
+                <div class="panel-body">
+                    <textarea id="welcomeTextArea" rows="8" style="width:100%;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:8px;resize:vertical;font-family:inherit;box-sizing:border-box;"></textarea>
+                    <div class="controls-row" style="margin-top:8px;justify-content:flex-end;gap:8px">
+                        <button class="tp-btn" title="Goster" onclick="showWelcomeNow()"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M1 6v3h2l5 3V3L3 6H1zm9-2.2v7.4c1.6-.5 3-1.9 3-3.7s-1.4-3.2-3-3.7zM6.5 12l-1 3h2l1-3h-2z"/></svg></button>
+                        <button class="tp-btn" title="Kaydet" onclick="saveWelcomeText()"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M2 1h9.5L14 3.5V14a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1zm1 1v3h7V2H3zm1 6v5h6V8H4z"/></svg></button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel" data-id="marketAdmin" data-feature="LTMarket">
+                <div class="panel-header"><span class="panel-title">Market Yonetici Ayarlari</span></div>
+                <div class="panel-body">
+                    <div id="marketAdminWaiting" class="empty">Market verisi bekleniyor...</div>
+                    <div id="marketAdminBody" style="display:none">
+                        <div class="controls-row">
+                            <div class="label">Market Acik</div>
+                            <label class="switch"><input type="checkbox" id="maEnabled" onchange="marketAdminCmd({action:'setEnabled', enabled:this.checked})"><span class="slider"></span></label>
+                        </div>
+                        <div class="controls-row">
+                            <div class="label">Baslangic LP</div>
+                            <input type="number" id="maStartingBalance" class="ma-input" min="0" step="100">
+                            <button class="tp-btn" title="Kaydet" onclick="marketAdminCmd({action:'setStartingBalance', amount:+maVal('maStartingBalance')})"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M2 1h9.5L14 3.5V14a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1zm1 1v3h7V2H3zm1 6v5h6V8H4z"/></svg></button>
+                        </div>
+                        <div class="controls-row">
+                            <div class="label">Komisyon (0.5 = %50)</div>
+                            <input type="number" id="maCommission" class="ma-input" min="0" step="0.05">
+                            <button class="tp-btn" title="Kaydet" onclick="marketAdminCmd({action:'setCommission', rate:+maVal('maCommission')})"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M2 1h9.5L14 3.5V14a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1zm1 1v3h7V2H3zm1 6v5h6V8H4z"/></svg></button>
+                        </div>
+                        <div class="controls-row">
+                            <div class="label">Stok Yenileme (gun)</div>
+                            <input type="number" id="maRestockDays" class="ma-input" min="1" step="1">
+                            <button class="tp-btn" title="Kaydet" onclick="marketAdminCmd({action:'setRestockDays', days:+maVal('maRestockDays')})"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M2 1h9.5L14 3.5V14a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1zm1 1v3h7V2H3zm1 6v5h6V8H4z"/></svg></button>
+                            <button class="tp-btn" title="Simdi Yenile" onclick="marketAdminCmd({action:'restockNow'})"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M8 2a6 6 0 1 1-5.3 3.2L1 3.6V7h3.4L2.9 5.5A4.5 4.5 0 1 0 8 3.5V2z"/></svg></button>
+                        </div>
+                        <div class="controls-row">
+                            <div class="label">Elektrik (LP/gun)</div>
+                            <input type="number" id="maElectricity" class="ma-input" min="0" step="10">
+                            <button class="tp-btn" title="Kaydet" onclick="marketAdminCmd({action:'setElectricityPrice', price:+maVal('maElectricity')})"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M2 1h9.5L14 3.5V14a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1zm1 1v3h7V2H3zm1 6v5h6V8H4z"/></svg></button>
+                        </div>
+                        <div class="controls-row">
+                            <div class="label">Satis Lisansi Zorunlu</div>
+                            <label class="switch"><input type="checkbox" id="maRequireLicense" onchange="marketAdminCmd({action:'setRequireLicense', enabled:this.checked})"><span class="slider"></span></label>
+                        </div>
+                        <div class="controls-row">
+                            <div class="label">Satis Lisansi Fiyati</div>
+                            <input type="number" id="maLicensePrice" class="ma-input" min="0" step="1000">
+                            <button class="tp-btn" title="Kaydet" onclick="marketAdminCmd({action:'setOneTimePrice', type:'license', price:+maVal('maLicensePrice')})"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M2 1h9.5L14 3.5V14a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1zm1 1v3h7V2H3zm1 6v5h6V8H4z"/></svg></button>
+                        </div>
+                        <div class="controls-row">
+                            <div class="label">Urun Bilgisi Fiyati</div>
+                            <input type="number" id="maProductInfoPrice" class="ma-input" min="0" step="1000">
+                            <button class="tp-btn" title="Kaydet" onclick="marketAdminCmd({action:'setOneTimePrice', type:'productInfo', price:+maVal('maProductInfoPrice')})"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M2 1h9.5L14 3.5V14a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1zm1 1v3h7V2H3zm1 6v5h6V8H4z"/></svg></button>
+                        </div>
+                        <div class="controls-row">
+                            <div class="label">Beceri Sarti</div>
+                            <label class="switch"><input type="checkbox" id="maRequireSkill" onchange="marketAdminCmd({action:'setCategorySkill', enabled:this.checked, minLevel:+maVal('maSkillLevel')})"><span class="slider"></span></label>
+                            <input type="number" id="maSkillLevel" class="ma-input" min="0" max="10" step="1" style="max-width:70px">
+                            <button class="tp-btn" title="Kaydet" onclick="marketAdminCmd({action:'setCategorySkill', enabled:document.getElementById('maRequireSkill').checked, minLevel:+maVal('maSkillLevel')})"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M2 1h9.5L14 3.5V14a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1zm1 1v3h7V2H3zm1 6v5h6V8H4z"/></svg></button>
+                        </div>
+
+                        <h4 class="ma-sub">Yonetici LP Ver</h4>
+                        <div class="controls-row">
+                            <input type="text" id="maGrantUser" class="ma-input" placeholder="Kullanici adi">
+                            <input type="number" id="maGrantAmount" class="ma-input" placeholder="LP" style="max-width:110px">
+                            <button class="tp-btn" title="Ver" onclick="marketAdminGrant()"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><circle cx="6" cy="8" r="5" fill="none" stroke="currentColor" stroke-width="1.3"/><text x="6" y="10.3" font-size="6" text-anchor="middle" fill="currentColor">$</text><path fill="currentColor" d="M13 3H8.8c.6.3 1.1.7 1.6 1.2H13a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-2.6a5 5 0 0 1-1.6 1.2H13a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/></svg></button>
+                        </div>
+
+                        <h4 class="ma-sub">Yukseltme Kademeleri</h4>
+                        <div class="controls-row">
+                            <select id="maTierKind" class="ma-input" style="max-width:120px" onchange="renderMarketTiers()">
+                                <option value="storage">Depo</option>
+                                <option value="discount">Indirim</option>
+                                <option value="freezer">Dondurucu</option>
+                            </select>
+                        </div>
+                        <div id="maTierRows"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="vDivider1" class="divider divider-v"></div>
+    <div id="vDivider2" class="divider divider-v"></div>
+    </div>
+
+    <div class="overlay" id="globalSettingsOverlay">
+        <div class="lt-popover">
+            <h3 style="margin-top:0">Genel Ayarlar</h3>
+            <h3>Discord Webhook</h3>
+            <div class="lt-row">
+                <input type="text" id="discordWebhookInput" placeholder="https://discord.com/api/webhooks/...">
+            </div>
+            <div id="discordTestResult" class="hint" style="margin-top:8px"></div>
+            <div class="footer">
+                <button class="secondary" onclick="testDiscordWebhook()">Test Mesaji Gonder</button>
+                <button class="secondary" onclick="closeGlobalSettings()">Kapat</button>
+                <button class="primary" onclick="saveGlobalSettings()">Kaydet</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="overlay" id="hideSettingsOverlay">
+        <div class="lt-popover">
+            <h3 id="hideSettingsTitle">Gizleme Ayarlari</h3>
+            <h3 style="margin-top:0">Gizlenecek Roller</h3>
+            <div id="roleCheckboxes">
+                <div class="controls-row">
+                    <div class="label">admin</div>
+                    <label class="switch"><input type="checkbox" value="admin" class="roleCk"><span class="slider"></span></label>
+                </div>
+                <div class="controls-row">
+                    <div class="label">moderator</div>
+                    <label class="switch"><input type="checkbox" value="moderator" class="roleCk"><span class="slider"></span></label>
+                </div>
+                <div class="controls-row">
+                    <div class="label">user</div>
+                    <label class="switch"><input type="checkbox" value="user" class="roleCk"><span class="slider"></span></label>
+                </div>
+            </div>
+            <h3 style="margin-top:16px">Gizlenecek Kullanicilar</h3>
+            <div class="lt-row">
+                <input type="text" id="hideUserInput" placeholder="Kullanici adi yaz, Enter'a bas">
+            </div>
+            <div class="chips" id="hiddenUserChips"></div>
+            <div class="footer">
+                <button class="secondary" onclick="closeHideSettings()">Kapat</button>
+                <button class="primary" onclick="saveHideSettings()">Kaydet</button>
+            </div>
+        </div>
+    </div>
+
+<script>
+// ---------- 3-column layout ----------
+// The page is 3 vertical columns that grow downward without limit (no
+// height cap on #board - normal page scroll handles overflow). Replaces an
+// earlier fixed 2x2-quadrant version.
+//   - Repositioning: drag a panel's header onto another panel (inserts
+//     just before it, possibly into a different column) or onto empty
+//     column space (appends to that column).
+//   - Column width: drag the thin gutter line between columns.
+//   - Individual panel height: drag a panel's own bottom-right corner
+//     (native CSS "resize: vertical" - no custom JS math needed for that
+//     part, just persisting the result).
+const LAYOUT_KEY = 'lt_layout_v2';
+const DEFAULT_COLUMNS = {
+    1: ['status', 'powers'],
+    2: ['players', 'permaDeath'],
+    3: ['damageLog', 'welcome', 'marketAdmin'],
+};
+const DEFAULT_COL_FRACTIONS = [0.28, 0.36, 0.36];
+
+function loadLayout() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}');
+        const colFractions = normaliseColumnFractions(saved.colFractions);
+        const columns = (saved.columns && typeof saved.columns === 'object')
+            ? saved.columns
+            : JSON.parse(JSON.stringify(DEFAULT_COLUMNS));
+        return { colFractions, columns };
+    } catch (err) {
+        return { colFractions: DEFAULT_COL_FRACTIONS.slice(), columns: JSON.parse(JSON.stringify(DEFAULT_COLUMNS)) };
+    }
+}
+
+function normaliseColumnFractions(value) {
+    if (!Array.isArray(value) || value.length !== 3) {
+        return DEFAULT_COL_FRACTIONS.slice();
+    }
+    const clean = value.map(v => Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : 0);
+    const sum = clean.reduce((total, value) => total + value, 0);
+    if (sum <= 0) return DEFAULT_COL_FRACTIONS.slice();
+    return clean.map(value => value / sum);
+}
+
+let layoutState = loadLayout();
+
+function saveLayoutState() {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(layoutState));
+}
+
+// The DOM is the source of truth for column contents/order after a drag -
+// this just reads it back into layoutState so it persists.
+function captureColumnsFromDom() {
+    const columns = {};
+    document.querySelectorAll('.lt-col').forEach(col => {
+        columns[col.dataset.col] = Array.from(col.querySelectorAll(':scope > .panel[data-id]')).map(p => p.dataset.id);
+    });
+    layoutState.columns = columns;
+    saveLayoutState();
+}
+
+const board = document.getElementById('board');
+const boardWrap = document.getElementById('boardWrap');
+const vDivider1 = document.getElementById('vDivider1');
+const vDivider2 = document.getElementById('vDivider2');
+
+function applyLayout() {
+    const placed = new Set();
+    Object.keys(layoutState.columns).forEach(colNum => {
+        const col = document.querySelector(`.lt-col[data-col="${colNum}"]`);
+        if (!col) return;
+        (layoutState.columns[colNum] || []).forEach(panelId => {
+            const panel = document.querySelector(`.panel[data-id="${panelId}"]`);
+            if (panel) {
+                col.appendChild(panel);
+                placed.add(panelId);
+            }
+        });
+    });
+    // A panel id that exists in the DOM but wasn't in the saved layout
+    // (e.g. a new panel shipped after the user's last save) falls back to
+    // column 1 instead of vanishing.
+    const col1 = document.querySelector('.lt-col[data-col="1"]');
+    document.querySelectorAll('.panel[data-id]').forEach(panel => {
+        if (!placed.has(panel.dataset.id) && col1) col1.appendChild(panel);
+    });
+
+    applyColumnWidths();
+}
+
+function applyColumnWidths() {
+    const gap = 16;
+    const available = Math.max(0, board.clientWidth - gap * 2);
+    layoutState.colFractions = normaliseColumnFractions(layoutState.colFractions);
+
+    // Keep the three columns inside the board at every viewport size.  The old
+    // fixed 200px floor made a 529px window require at least 632px and silently
+    // clipped the third column.  A proportional floor keeps resize handles
+    // usable on wide screens while allowing narrow screens to fit exactly.
+    const minPx = Math.min(180, available / 3);
+    const widths = layoutState.colFractions.map(f => available * f);
+    let deficit = 0;
+    for (let i = 0; i < widths.length; i++) {
+        if (widths[i] < minPx) {
+            deficit += minPx - widths[i];
+            widths[i] = minPx;
+        }
+    }
+    if (deficit > 0) {
+        const donors = widths.map((width, i) => ({ i, spare: Math.max(0, width - minPx) }));
+        const totalSpare = donors.reduce((sum, donor) => sum + donor.spare, 0);
+        if (totalSpare > 0) {
+            donors.forEach(donor => {
+                widths[donor.i] -= deficit * (donor.spare / totalSpare);
+            });
+        }
+    }
+
+    const widthSum = widths.reduce((sum, width) => sum + width, 0) || 1;
+    layoutState.colFractions = widths.map(width => width / widthSum);
+    document.querySelectorAll('.lt-col').forEach((col, i) => {
+        const px = available * layoutState.colFractions[i];
+        col.style.flexBasis = px + 'px';
+        col.style.flexGrow = '0';
+        col.style.flexShrink = '0';
+    });
+    positionDividers();
+}
+
+function positionDividers() {
+    const cols = document.querySelectorAll('.lt-col');
+    if (cols.length < 3) return;
+    const boardRect = board.getBoundingClientRect();
+    const wrapRect = boardWrap.getBoundingClientRect();
+    const top = boardRect.top - wrapRect.top;
+    const gap = 16;
+
+    const col1Right = cols[0].getBoundingClientRect().right - wrapRect.left;
+    const col2Right = cols[1].getBoundingClientRect().right - wrapRect.left;
+
+    vDivider1.style.left = (col1Right + gap / 2) + 'px';
+    vDivider1.style.top = top + 'px';
+    vDivider1.style.height = boardRect.height + 'px';
+
+    vDivider2.style.left = (col2Right + gap / 2) + 'px';
+    vDivider2.style.top = top + 'px';
+    vDivider2.style.height = boardRect.height + 'px';
+}
+
+function makeColumnDividerDraggable(divider, leftColIndex, rightColIndex) {
+    let dragging = false;
+    let startX = 0;
+    let startLeftPx = 0, startRightPx = 0;
+
+    divider.addEventListener('pointerdown', (e) => {
+        dragging = true;
+        startX = e.clientX;
+        const cols = document.querySelectorAll('.lt-col');
+        startLeftPx = cols[leftColIndex].getBoundingClientRect().width;
+        startRightPx = cols[rightColIndex].getBoundingClientRect().width;
+        divider.classList.add('active');
+        divider.setPointerCapture(e.pointerId);
+    });
+    divider.addEventListener('pointermove', (e) => {
+        if (!dragging) return;
+        const dx = e.clientX - startX;
+        const gap = 16;
+        const totalWidth = Math.max(0, board.clientWidth - gap * 2);
+        const minPx = Math.min(180, totalWidth / 3);
+        const pairPx = startLeftPx + startRightPx;
+        let newRightPx = Math.max(minPx, Math.min(pairPx - minPx, startRightPx - dx));
+        let newLeftPx = pairPx - newRightPx;
+
+        layoutState.colFractions[leftColIndex] = newLeftPx / totalWidth;
+        layoutState.colFractions[rightColIndex] = newRightPx / totalWidth;
+        layoutState.colFractions = normaliseColumnFractions(layoutState.colFractions);
+        applyColumnWidths();
+    });
+    function endDrag() {
+        if (!dragging) return;
+        dragging = false;
+        divider.classList.remove('active');
+        saveLayoutState();
+    }
+    divider.addEventListener('pointerup', endDrag);
+    divider.addEventListener('pointercancel', endDrag);
+}
+
+makeColumnDividerDraggable(vDivider1, 0, 1);
+makeColumnDividerDraggable(vDivider2, 1, 2);
+
+// Drag a panel's header onto another panel to move it there (inserted just
+// before, possibly into a different column).
+function makeSwappable(panel) {
+    const header = panel.querySelector('.panel-header');
+    header.setAttribute('draggable', 'true');
+
+    header.addEventListener('dragstart', (e) => {
+        if (e.target.closest('button')) { e.preventDefault(); return; }
+        e.dataTransfer.setData('text/plain', panel.dataset.id);
+        e.dataTransfer.effectAllowed = 'move';
+    });
+
+    panel.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        panel.classList.add('drag-over');
+    });
+    panel.addEventListener('dragleave', () => panel.classList.remove('drag-over'));
+    panel.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation(); // don't also trigger the parent column's drop handler below
+        panel.classList.remove('drag-over');
+        const draggedId = e.dataTransfer.getData('text/plain');
+        if (!draggedId || draggedId === panel.dataset.id) return;
+        const draggedPanel = document.querySelector(`.panel[data-id="${draggedId}"]`);
+        if (!draggedPanel) return;
+        panel.parentElement.insertBefore(draggedPanel, panel);
+        captureColumnsFromDom();
+    });
+}
+
+// Dropping on empty column space (not on a specific panel) appends to that column.
+function makeColumnDroppable(col) {
+    col.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        col.classList.add('drag-over-col');
+    });
+    col.addEventListener('dragleave', (e) => {
+        if (e.target === col) col.classList.remove('drag-over-col');
+    });
+    col.addEventListener('drop', (e) => {
+        e.preventDefault();
+        col.classList.remove('drag-over-col');
+        const draggedId = e.dataTransfer.getData('text/plain');
+        if (!draggedId) return;
+        const draggedPanel = document.querySelector(`.panel[data-id="${draggedId}"]`);
+        if (!draggedPanel) return;
+        col.appendChild(draggedPanel);
+        captureColumnsFromDom();
+    });
+}
+
+// Persists a panel's individually-resized height (the native CSS
+// "resize: vertical" handle already does the actual resizing).
+function makeHeightPersistable(panel) {
+    const key = 'lt_panel_height_' + panel.dataset.id;
+    const savedHeight = localStorage.getItem(key);
+    if (savedHeight) panel.style.height = savedHeight;
+
+    const resizeObserver = new ResizeObserver(() => {
+        localStorage.setItem(key, panel.offsetHeight + 'px');
+    });
+    resizeObserver.observe(panel);
+}
+
+applyLayout();
+document.querySelectorAll('.panel[data-id]').forEach(panel => {
+    makeSwappable(panel);
+    makeHeightPersistable(panel);
+});
+document.querySelectorAll('.lt-col').forEach(makeColumnDroppable);
+window.addEventListener('resize', applyColumnWidths);
+
+// ---------- Resizable table columns (widths persisted per table id) ----------
+function makeColumnsResizable(table) {
+    const tableId = table.id;
+    const key = 'lt_col_widths_' + tableId;
+    const saved = JSON.parse(localStorage.getItem(key) || 'null');
+    const headers = table.querySelectorAll('thead th');
+
+    headers.forEach((th, i) => {
+        if (saved && saved[i]) th.style.width = saved[i];
+
+        const resizer = document.createElement('div');
+        resizer.className = 'col-resizer';
+        th.appendChild(resizer);
+
+        let dragging = false, startX = 0, startWidth = 0;
+        resizer.addEventListener('pointerdown', (e) => {
+            dragging = true;
+            startX = e.clientX;
+            startWidth = th.offsetWidth;
+            resizer.classList.add('active');
+            resizer.setPointerCapture(e.pointerId);
+            e.stopPropagation();
+        });
+        resizer.addEventListener('pointermove', (e) => {
+            if (!dragging) return;
+            const newWidth = Math.max(40, startWidth + (e.clientX - startX));
+            th.style.width = newWidth + 'px';
+        });
+        function endResize() {
+            if (!dragging) return;
+            dragging = false;
+            resizer.classList.remove('active');
+            const widths = Array.from(headers).map(h => h.style.width || '');
+            localStorage.setItem(key, JSON.stringify(widths));
+        }
+        resizer.addEventListener('pointerup', endResize);
+        resizer.addEventListener('pointercancel', endResize);
+    });
+}
+
+makeColumnsResizable(document.getElementById('playersTable'));
+makeColumnsResizable(document.getElementById('damageTable'));
+
+// ---------- Feature gating (only show panels/controls for LT mods that are
+// actually installed - state/features.json is written once per game
+// session by LightTuneLib, listing every feature mod that registered
+// itself via LightTune.registerFeature) ----------
+let installedFeatures = new Set();
+
+function applyFeatureGating() {
+    document.querySelectorAll('[data-feature]').forEach(el => {
+        el.style.display = installedFeatures.has(el.dataset.feature) ? '' : 'none';
+    });
+    // The "LT Gucleri" panel holds only feature-gated rows - hide the whole
+    // panel if every row inside it ended up hidden, instead of leaving an
+    // empty shell.
+    const powersPanel = document.querySelector('.panel[data-id="powers"]');
+    if (powersPanel) {
+        const anyVisible = Array.from(powersPanel.querySelectorAll('[data-feature]'))
+            .some(el => el.style.display !== 'none');
+        powersPanel.style.display = anyVisible ? '' : 'none';
+    }
+}
+
+async function loadFeatures() {
+    try {
+        const res = await fetch('/api/state/features');
+        const data = await res.json();
+        installedFeatures = new Set((data.features || []).map(f => f.id));
+    } catch (err) {
+        // leave as-is if the bridge is unreachable
+    }
+    applyFeatureGating();
+}
+
+// ---------- Global settings (Discord webhook) ----------
+function openGlobalSettings() {
+    fetch('/api/settings').then(res => res.json()).then(data => {
+        document.getElementById('discordWebhookInput').value = data.discordWebhookUrl || '';
+    });
+    document.getElementById('discordTestResult').textContent = '';
+    document.getElementById('globalSettingsOverlay').classList.add('open');
+}
+function closeGlobalSettings() {
+    document.getElementById('globalSettingsOverlay').classList.remove('open');
+}
+async function saveGlobalSettings() {
+    const url = document.getElementById('discordWebhookInput').value.trim();
+    const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ discordWebhookUrl: url }),
+    });
+    const result = document.getElementById('discordTestResult');
+    if (res.ok) {
+        result.textContent = 'Kaydedildi.';
+        result.style.color = 'var(--ok)';
+    } else {
+        const data = await res.json().catch(() => ({}));
+        result.textContent = data.error || 'Kaydedilemedi.';
+        result.style.color = 'var(--bad)';
+    }
+}
+async function testDiscordWebhook() {
+    const result = document.getElementById('discordTestResult');
+    result.textContent = 'Gonderiliyor...';
+    result.style.color = 'var(--muted)';
+    try {
+        const res = await fetch('/api/settings/discord/test', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok) {
+            result.textContent = 'Test mesaji gonderildi, Discord kanalini kontrol et.';
+            result.style.color = 'var(--ok)';
+        } else {
+            result.textContent = data.error || 'Gonderilemedi.';
+            result.style.color = 'var(--bad)';
+        }
+    } catch (err) {
+        result.textContent = 'LT Panel Bridge ile baglanti kurulamadi.';
+        result.style.color = 'var(--bad)';
+    }
+}
+document.getElementById('globalSettingsBtn').addEventListener('click', openGlobalSettings);
+
+// ---------- Connection status (three distinct states) ----------
+// state/players.json is now written on the same ~2s timer whether or not
+// the local client is admin (see LT_StateSync.lua) - an empty-but-fresh
+// list means "server/game running, current session just isn't admin",
+// which used to be indistinguishable from "server not running at all".
+const FRESH_MS = 6000;
+let latestPlayers = {}; // username -> accessLevel, refreshed every poll
+let spectateTarget = null; // username currently being spectated, or null
+
+async function refresh() {
+    const dot = document.getElementById('statusDot');
+    const text = document.getElementById('statusText');
+    try {
+        const res = await fetch('/api/players');
+        const data = await res.json();
+        const players = data.players || [];
+        const fresh = data.updatedAt && (Date.now() - data.updatedAt) < FRESH_MS;
+
+        // Every panel except the connection status itself stays hidden
+        // until the locally logged-in player is confirmed admin (state/
+        // players.json's isAdmin, written by LT_StateSync.lua) - not just
+        // gated by which mods are installed. Re-applied every poll so it
+        // reacts live to promotion/demotion without a page reload.
+        const amIAdmin = !!(fresh && data.isAdmin);
+        document.querySelectorAll('.panel').forEach(el => {
+            if (el.dataset.id === 'status') return;
+            el.style.display = amIAdmin ? '' : 'none';
+        });
+
+        latestPlayers = {};
+        for (const p of players) latestPlayers[p.username] = p.accessLevel;
+
+        if (!fresh) {
+            dot.className = 'dot';
+            text.textContent = 'Sunucu kapali (ya da oyun/LT modu su an calismiyor)';
+        } else if (!amIAdmin) {
+            dot.className = 'dot warn';
+            text.textContent = 'Sunucu acik - bu hesap admin degil, paneller gizli';
+        } else {
+            dot.className = 'dot ok';
+            text.textContent = `Sunucu acik - canli (${players.length} oyuncu)`;
+        }
+
+        // Status text/dot above is intentionally based on the RAW list (it's
+        // about server/admin connectivity, not about what's chosen to be
+        // hidden here) - only the rendered rows are filtered.
+        const hiddenRoles = getHiddenRoles('players');
+        const hiddenUsers = getHiddenUsers('players');
+        const visiblePlayers = (hiddenRoles.length || hiddenUsers.length)
+            ? players.filter(p => !hiddenUsers.includes(p.username) && !hiddenRoles.includes(p.accessLevel))
+            : players;
+
+        const rows = document.getElementById('playerRows');
+        const empty = document.getElementById('emptyState');
+        rows.innerHTML = '';
+
+        if (visiblePlayers.length === 0) {
+            empty.style.display = 'block';
+        } else {
+            empty.style.display = 'none';
+            // Online first, then alphabetical - an offline-heavy roster
+            // otherwise buries whoever is actually playing right now.
+            visiblePlayers.sort((a, b) => {
+                if (!!a.online !== !!b.online) return a.online ? -1 : 1;
+                return String(a.username).localeCompare(String(b.username));
+            });
+            for (const p of visiblePlayers) {
+                const tr = document.createElement('tr');
+                const u = escapeAttr(p.username);
+                const isTarget = spectateTarget === p.username;
+                const isBanned = !!p.banned;
+                const hasPos = typeof p.x === 'number';
+
+                // Every action is an icon button. Green = currently active
+                // (spectating / banned), red = inactive. One-shot actions
+                // (teleport, kick) flash green then return to red, which is
+                // handled by flashAction() below.
+                const actions = [];
+                if (installedFeatures.has('LTSpectatorMode')) {
+                    actions.push(`<button class="act-btn ${isTarget ? 'act-on' : 'act-off'}" title="${isTarget ? 'Izlemeyi Birak' : 'Izle'}"
+                        onclick="${isTarget ? 'stopSpectating(this)' : `startSpectating('${u}', this)`}"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M8 3C4 3 1.3 6 .5 8c.8 2 3.5 5 7.5 5s6.7-3 7.5-5c-.8-2-3.5-5-7.5-5zm0 8.2A3.2 3.2 0 1 1 8 4.8a3.2 3.2 0 0 1 0 6.4z"/><circle cx="8" cy="8" r="1.6" fill="currentColor"/></svg></button>`);
+                }
+                actions.push(`<button class="act-btn act-off" title="Isinlan" ${hasPos ? '' : 'disabled'}
+                    onclick="teleportTo(${p.x || 0}, ${p.y || 0}, ${p.z || 0}, this)"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M8 0C5 0 2.5 2.4 2.5 5.4 2.5 9.4 8 15 8 15s5.5-5.6 5.5-9.6C13.5 2.4 11 0 8 0zm0 7.6a2.1 2.1 0 1 1 0-4.2 2.1 2.1 0 0 1 0 4.2z"/></svg></button>`);
+                actions.push(`<button class="act-btn act-off" title="Kickle"
+                    onclick="moderateUser('kick', '${u}', this)"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M6 2H3a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3v-1H3V3h3V2z"/><path fill="currentColor" d="M10.8 8 8 5.2l.7-.7L13 8l-4.3 3.5-.7-.7L10.8 8.5H5v-1z"/></svg></button>`);
+                actions.push(`<button class="act-btn ${isBanned ? 'act-on' : 'act-off'}" title="${isBanned ? 'Bani Kaldir' : 'Banla'}"
+                    onclick="moderateUser('${isBanned ? 'unban' : 'ban'}', '${u}', this)"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.4"/><line x1="3.6" y1="12.4" x2="12.4" y2="3.6" stroke="currentColor" stroke-width="1.4"/></svg></button>`);
+
+                tr.innerHTML = `
+                    <td><span class="status-dot ${p.online ? 'online' : 'offline'}" title="${p.online ? 'Cevrimici' : 'Cevrimdisi'}"></span></td>
+                    <td>${p.username}</td>
+                    <td>${p.clanTag || '-'}</td>
+                    <td>${fmtLP(p.lp)}</td>
+                    <td>${fmtLP(p.bountyLp)}</td>
+                    <td>${p.deaths != null ? p.deaths : '-'}</td>
+                    <td>${p.accessLevel || '-'}</td>
+                    <td>${hasPos ? `${Math.round(p.x)}, ${Math.round(p.y)}, ${Math.round(p.z)}` : '-'}</td>
+                    <td class="row-actions">${actions.join('')}</td>
+                `;
+                rows.appendChild(tr);
+            }
+        }
+    } catch (err) {
+        dot.className = 'dot';
+        text.textContent = 'LT Panel Bridge ile baglanti kurulamadi (uygulama calisiyor mu?)';
+    }
+}
+
+function fmtTime(ms) {
+    if (!ms) return '-';
+    const d = new Date(ms);
+    return d.toLocaleTimeString('tr-TR');
+}
+
+// These buttons are icon-only now, so their label is never touched - state
+// is shown by flashAction()'s green/red class instead of replacement text.
+async function teleportTo(x, y, z, btn) {
+    if (btn) btn.disabled = true;
+    try {
+        await fetch('/api/cmd/damagelog_teleport', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ x, y, z }),
+        });
+    } catch (err) { /* status dot already reflects connectivity */ }
+    flashAction(btn);
+}
+
+async function clearDamageLog(btn) {
+    if (btn) btn.disabled = true;
+    try {
+        await fetch('/api/cmd/damagelog_clear', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: '{}',
+        });
+        await refreshDamageLog();
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+// ---------- Hide-by-user/role settings (shared popover, used by both the
+// Oyuncular panel and the Hasar Logu panel - each has its own storage key
+// and its own title/refresh callback, tracked via `hideSettingsTarget`) ----------
+const HIDE_SETTINGS_TARGETS = {
+    players: { title: 'Oyuncular - Gizleme Ayarlari', refresh: () => refresh() },
+    damageLog: { title: 'Hasar Logu - Gizleme Ayarlari', refresh: () => refreshDamageLog() },
+};
+let hideSettingsTarget = null;
+let pendingHiddenUsers = null;
+
+function hiddenRolesKey(target) { return 'lt_hidden_roles_' + target; }
+function hiddenUsersKey(target) { return 'lt_hidden_users_' + target; }
+
+function getHiddenRoles(target) {
+    try { return JSON.parse(localStorage.getItem(hiddenRolesKey(target)) || '[]'); } catch (e) { return []; }
+}
+function getHiddenUsers(target) {
+    try { return JSON.parse(localStorage.getItem(hiddenUsersKey(target)) || '[]'); } catch (e) { return []; }
+}
+
+function openHideSettings(target) {
+    hideSettingsTarget = target;
+    pendingHiddenUsers = null;
+    document.getElementById('hideSettingsTitle').textContent = HIDE_SETTINGS_TARGETS[target].title;
+    const roles = getHiddenRoles(target);
+    document.querySelectorAll('.roleCk').forEach(ck => { ck.checked = roles.includes(ck.value); });
+    renderHiddenUserChips();
+    document.getElementById('hideSettingsOverlay').classList.add('open');
+}
+function closeHideSettings() {
+    document.getElementById('hideSettingsOverlay').classList.remove('open');
+}
+
+function renderHiddenUserChips() {
+    if (pendingHiddenUsers === null) pendingHiddenUsers = getHiddenUsers(hideSettingsTarget).slice();
+    const box = document.getElementById('hiddenUserChips');
+    box.innerHTML = '';
+    for (const name of pendingHiddenUsers) {
+        const chip = document.createElement('span');
+        chip.className = 'chip';
+        chip.innerHTML = `${name} <button type="button" aria-label="Kaldir">&times;</button>`;
+        chip.querySelector('button').onclick = () => {
+            pendingHiddenUsers = pendingHiddenUsers.filter(u => u !== name);
+            renderHiddenUserChips();
+        };
+        box.appendChild(chip);
+    }
+}
+
+document.getElementById('playersSettingsBtn').addEventListener('click', () => openHideSettings('players'));
+document.getElementById('dmgSettingsBtn').addEventListener('click', () => openHideSettings('damageLog'));
+document.getElementById('hideUserInput').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    const val = e.target.value.trim();
+    if (!val) return;
+    if (pendingHiddenUsers === null) pendingHiddenUsers = getHiddenUsers(hideSettingsTarget).slice();
+    if (!pendingHiddenUsers.includes(val)) pendingHiddenUsers.push(val);
+    e.target.value = '';
+    renderHiddenUserChips();
+});
+
+function saveHideSettings() {
+    const target = hideSettingsTarget;
+    const roles = Array.from(document.querySelectorAll('.roleCk:checked')).map(ck => ck.value);
+    localStorage.setItem(hiddenRolesKey(target), JSON.stringify(roles));
+    localStorage.setItem(hiddenUsersKey(target), JSON.stringify(pendingHiddenUsers || []));
+    pendingHiddenUsers = null;
+    closeHideSettings();
+    HIDE_SETTINGS_TARGETS[target].refresh();
+}
+
+function escapeAttr(s) {
+    return String(s).replace(/[\\'"]/g, '\\$&');
+}
+
+// Same shortened form the in-game windows use (1.7M / 2B), so the panel and
+// the game never disagree about what a balance says.
+function fmtLP(v) {
+    if (v == null) return '-';
+    const n = Number(v);
+    if (!isFinite(n)) return '-';
+    if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
+    if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
+    return String(Math.round(n));
+}
+
+// One-shot actions (teleport, kick) flash green and drop back to red, as
+// requested - ongoing ones (spectate, ban) keep their state from the data.
+function flashAction(btn) {
+    if (!btn) return;
+    btn.classList.remove('act-off');
+    btn.classList.add('act-on');
+    setTimeout(() => {
+        btn.classList.remove('act-on');
+        btn.classList.add('act-off');
+        btn.disabled = false;
+    }, 1200);
+}
+
+async function moderateUser(action, username, btn) {
+    if (btn) btn.disabled = true;
+    try {
+        await fetch('/api/cmd/moderate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action, username }),
+        });
+    } catch (err) { /* status dot already reflects connectivity */ }
+    flashAction(btn);
+    refresh();
+}
+
+// Used by the damage log's own Watch button - routes through the same
+// spectate command the players table uses.
+async function spectatePlayer(username, btn) {
+    if (spectateTarget === username) {
+        await stopSpectating(btn);
+    } else {
+        await startSpectating(username, btn);
+    }
+}
+
+// Health colour bands, exactly as requested: 100-75 green, 75-50 yellow,
+// 50-25 light red, 25-0 dark red, and a white "OLU" at zero.
+function healthCell(e) {
+    if (e.dead === true) return '<span class="hp-dead">OLU</span>';
+    if (typeof e.healthPercent !== 'number') return '-';
+    const v = Math.round(e.healthPercent);
+    if (v <= 0) return '<span class="hp-dead">OLU</span>';
+    let cls = 'hp-green';
+    if (v < 25) cls = 'hp-darkred';
+    else if (v < 50) cls = 'hp-lightred';
+    else if (v < 75) cls = 'hp-yellow';
+    return `<span class="${cls}">${v}%</span>`;
+}
+
+async function refreshDamageLog() {
+    try {
+        const res = await fetch('/api/damagelog');
+        const data = await res.json();
+        let entries = data.entries || [];
+
+        const hiddenRoles = getHiddenRoles('damageLog');
+        const hiddenUsers = getHiddenUsers('damageLog');
+        if (hiddenRoles.length || hiddenUsers.length) {
+            entries = entries.filter(e => {
+                if (hiddenUsers.includes(e.target)) return false;
+                const role = latestPlayers[e.target];
+                if (role && hiddenRoles.includes(role)) return false;
+                return true;
+            });
+        }
+
+        const limitValue = document.getElementById('logLimit').value;
+        if (limitValue !== 'all') {
+            entries = entries.slice(0, parseInt(limitValue, 10));
+        }
+
+        const rows = document.getElementById('damageRows');
+        const empty = document.getElementById('damageEmptyState');
+        rows.innerHTML = '';
+
+        if (entries.length === 0) {
+            empty.style.display = 'block';
+            return;
+        }
+        empty.style.display = 'none';
+
+        for (const e of entries) {
+            const tr = document.createElement('tr');
+            const causeCls = 'cause-' + (e.cause || 'default').replace(/[^a-zA-Z0-9_]/g, '_');
+            const hasPos = typeof e.x === 'number';
+            // Icon buttons instead of words (user request: "isinlan, izle,
+            // loglari temizle, kaydet gibi yazilar yerine direk o tusu
+            // anlatan ikonlar olsun") plus the requested Watch button next
+            // to Teleport.
+            const actions = [];
+            if (hasPos) {
+                actions.push(`<button class="tp-btn" title="Isinlan" onclick="teleportTo(${e.x}, ${e.y}, ${e.z}, this)"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M8 0C5 0 2.5 2.4 2.5 5.4 2.5 9.4 8 15 8 15s5.5-5.6 5.5-9.6C13.5 2.4 11 0 8 0zm0 7.6a2.1 2.1 0 1 1 0-4.2 2.1 2.1 0 0 1 0 4.2z"/></svg></button>`);
+            }
+            if (e.target) {
+                actions.push(`<button class="tp-btn" title="Izle" onclick="spectatePlayer('${escapeAttr(e.target)}', this)"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M8 3C4 3 1.3 6 .5 8c.8 2 3.5 5 7.5 5s6.7-3 7.5-5c-.8-2-3.5-5-7.5-5zm0 8.2A3.2 3.2 0 1 1 8 4.8a3.2 3.2 0 0 1 0 6.4z"/><circle cx="8" cy="8" r="1.6" fill="currentColor"/></svg></button>`);
+            }
+            tr.innerHTML = `
+                <td>${fmtTime(e.time)}</td>
+                <td>${e.target || '-'}</td>
+                <td>${e.attacker || '-'}</td>
+                <td><span class="cause-tag ${causeCls}">${e.cause || '?'}</span>${e.count > 1 ? ` <span class="repeat-badge">x${e.count}</span>` : ''}</td>
+                <td>${healthCell(e)}</td>
+                <td>${e.description || '-'}</td>
+                <td>${e.status || '-'}</td>
+                <td class="row-actions">${actions.join('')}</td>
+            `;
+            rows.appendChild(tr);
+        }
+    } catch (err) {
+        // status dot already reflects bridge/game connectivity; nothing extra to show here
+    }
+}
+
+let cameramanPending = false;
+
+async function onCameramanToggle(checkbox) {
+    cameramanPending = true;
+    checkbox.disabled = true;
+    try {
+        await fetch('/api/cmd/cameraman', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: checkbox.checked }),
+        });
+    } finally {
+        checkbox.disabled = false;
+        // Ignore the next poll's snapshot - it can still reflect the
+        // pre-toggle state if it lands before the game applies the command.
+        setTimeout(() => { cameramanPending = false; }, 1000);
+    }
+}
+
+async function refreshCameraman() {
+    if (cameramanPending) return;
+    try {
+        const res = await fetch('/api/state/cameraman');
+        const data = await res.json();
+        document.getElementById('cameramanToggle').checked = !!data.enabled;
+    } catch (err) {
+        // leave the switch as-is if the bridge is unreachable
+    }
+}
+
+let hideAdminTagPending = false;
+
+async function onHideAdminTagToggle(checkbox) {
+    hideAdminTagPending = true;
+    checkbox.disabled = true;
+    try {
+        await fetch('/api/cmd/hideadmintag', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: checkbox.checked }),
+        });
+    } finally {
+        checkbox.disabled = false;
+        setTimeout(() => { hideAdminTagPending = false; }, 1000);
+    }
+}
+
+async function refreshHideAdminTag() {
+    if (hideAdminTagPending) return;
+    try {
+        const res = await fetch('/api/state/hideadmintag');
+        const data = await res.json();
+        document.getElementById('hideAdminTagToggle').checked = !!data.enabled;
+    } catch (err) {
+        // leave the switch as-is if the bridge is unreachable
+    }
+}
+
+let marketPending = false;
+
+async function onMarketToggle(checkbox) {
+    marketPending = true;
+    checkbox.disabled = true;
+    try {
+        await fetch('/api/cmd/market', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: checkbox.checked }),
+        });
+    } finally {
+        checkbox.disabled = false;
+        setTimeout(() => { marketPending = false; }, 1000);
+    }
+}
+
+async function refreshMarket() {
+    if (marketPending) return;
+    try {
+        const res = await fetch('/api/state/market');
+        const data = await res.json();
+        // enabled defaults true (checked) until the game writes its first
+        // state - matches the server's own marketEnabled default.
+        document.getElementById('marketToggle').checked = data.enabled !== false;
+    } catch (err) {
+        // leave the switch as-is if the bridge is unreachable
+    }
+}
+
+// ---------- Karsilama / Kurallar ----------
+let welcomeFocused = false;
+document.getElementById('welcomeTextArea').addEventListener('focus', () => { welcomeFocused = true; });
+document.getElementById('welcomeTextArea').addEventListener('blur', () => { welcomeFocused = false; });
+
+async function refreshWelcome() {
+    if (welcomeFocused) return;
+    try {
+        const res = await fetch('/api/state/welcome');
+        const data = await res.json();
+        if (typeof data.text === 'string') {
+            document.getElementById('welcomeTextArea').value = data.text;
+        }
+    } catch (err) {
+        // leave the textarea as-is if the bridge is unreachable
+    }
+}
+
+async function saveWelcomeText() {
+    const text = document.getElementById('welcomeTextArea').value;
+    await fetch('/api/cmd/welcome', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+    });
+}
+
+async function showWelcomeNow() {
+    // Saves first so "Goster" always broadcasts whatever is currently in
+    // the textarea, not a possibly-stale previously-saved version. The two
+    // actions are separate cmd/ channels polled independently by the game
+    // client (1s interval each) - a short delay here avoids a race where
+    // the broadcast reads the server's text before the save command has
+    // actually been picked up and applied.
+    await saveWelcomeText();
+    setTimeout(async () => {
+        await fetch('/api/cmd/welcome_show', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ trigger: true }),
+        });
+    }, 1500);
+}
+
+// ---------- Kalici Olum (Permadeath) ----------
+let permaDeathThresholdFocused = false;
+document.getElementById('permaDeathThresholdInput').addEventListener('focus', () => { permaDeathThresholdFocused = true; });
+document.getElementById('permaDeathThresholdInput').addEventListener('blur', () => { permaDeathThresholdFocused = false; });
+
+async function savePermaDeathThreshold() {
+    const val = parseInt(document.getElementById('permaDeathThresholdInput').value, 10);
+    if (!val || val < 1) return;
+    await fetch('/api/cmd/permadeath_threshold', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ threshold: val }),
+    });
+}
+
+async function unbanPlayer(username, btn) {
+    btn.disabled = true;
+    btn.textContent = '...';
+    try {
+        await fetch('/api/cmd/permadeath_unban', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username }),
+        });
+    } finally {
+        setTimeout(refreshPermaDeath, 500);
+    }
+}
+
+async function adjustPermaDeathExtra(username, delta, btn) {
+    username = (username || '').trim();
+    if (!username) return;
+    if (btn) { btn.disabled = true; }
+    try {
+        await fetch('/api/cmd/permadeath_adjust', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, delta }),
+        });
+    } finally {
+        if (btn) { btn.disabled = false; }
+        setTimeout(refreshPermaDeath, 500);
+    }
+}
+
+async function refreshPermaDeath() {
+    try {
+        const res = await fetch('/api/state/permadeath');
+        const data = await res.json();
+        const players = data.players || [];
+
+        if (data.threshold && !permaDeathThresholdFocused) {
+            document.getElementById('permaDeathThresholdInput').value = data.threshold;
+        }
+
+        // Only players who have actually died at least once - a fresh
+        // record exists for everyone ever seen online (LT_LevelingToplist
+        // also reads PersistentStats), but a 0-death entry is just noise here.
+        const sorted = players.filter(p => (p.deaths || 0) > 0).sort((a, b) => (b.deaths || 0) - (a.deaths || 0));
+        const rows = document.getElementById('permaDeathRows');
+        const empty = document.getElementById('permaDeathEmptyState');
+        rows.innerHTML = '';
+
+        if (sorted.length === 0) {
+            empty.style.display = 'block';
+        } else {
+            empty.style.display = 'none';
+            for (const p of sorted) {
+                const tr = document.createElement('tr');
+                const safeName = p.username.replace(/'/g, "\\'");
+                const statusHtml = p.banned
+                    ? `<span class="cause-tag cause-PvP">Banli</span>`
+                    : `<span class="cause-tag cause-Zombi">Aktif</span>`;
+                const extra = p.extraLives || 0;
+                const extraHtml = `${extra > 0 ? '+' : ''}${extra}`;
+                let actionHtml = `<button class="tp-btn" onclick="adjustPermaDeathExtra('${safeName}', 1, this)">+1</button> `
+                    + `<button class="tp-btn" onclick="adjustPermaDeathExtra('${safeName}', -1, this)">-1</button>`;
+                if (p.banned) {
+                    actionHtml += ` <button class="tp-btn" title="Bani Kaldir" onclick="unbanPlayer('${safeName}', this)"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M4.5 5.5V4a3.5 3.5 0 0 1 6.8-1.1l-1 .3A2.5 2.5 0 0 0 5.5 4v1.5H12a1 1 0 0 1 1 1V13a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6.5a1 1 0 0 1 1-1h.5z"/></svg></button>`;
+                }
+                tr.innerHTML = `
+                    <td>${p.username}</td>
+                    <td>${p.deaths || 0}</td>
+                    <td>${extraHtml}</td>
+                    <td>${statusHtml}</td>
+                    <td>${actionHtml}</td>
+                `;
+                rows.appendChild(tr);
+            }
+        }
+    } catch (err) {
+        // nothing extra to show - status panel already reflects bridge connectivity
+    }
+}
+
+let spectatePending = false;
+
+async function startSpectating(username, btn) {
+    spectatePending = true;
+    if (btn) { btn.disabled = true; }
+    try {
+        await fetch('/api/cmd/spectate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username }),
+        });
+        spectateTarget = username;
+    } finally {
+        setTimeout(() => { spectatePending = false; }, 1000);
+    }
+}
+
+async function stopSpectating(btn) {
+    spectatePending = true;
+    if (btn) { btn.disabled = true; }
+    try {
+        await fetch('/api/cmd/spectate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: '' }),
+        });
+        spectateTarget = null;
+    } finally {
+        setTimeout(() => { spectatePending = false; }, 1000);
+    }
+}
+
+async function refreshSpectate() {
+    if (spectatePending) return;
+    try {
+        const res = await fetch('/api/state/spectate');
+        const data = await res.json();
+        spectateTarget = data.target || null;
+    } catch (err) {
+        // leave as-is if the bridge is unreachable
+    }
+}
+
+// ---------------------------------------------------------- Market admin
+// Reads state/market_admin.json (written by LTMarket's LT_MarketWebAdmin.lua)
+// and posts every change back through cmd/market_admin. Both are the
+// Bridge's existing generic endpoints, so server.js is untouched.
+//
+// Inputs are only refilled when they are NOT focused - otherwise the 2s
+// refresh would overwrite what the admin is halfway through typing. Same
+// guard the PermaDeath threshold and Welcome text areas already use.
+let marketAdminSettings = null;
+
+function maVal(id) {
+    const el = document.getElementById(id);
+    return el ? el.value : '';
+}
+
+function maSet(id, value) {
+    const el = document.getElementById(id);
+    if (!el || el === document.activeElement) return;
+    if (el.type === 'checkbox') el.checked = !!value;
+    else el.value = (value === null || value === undefined) ? '' : value;
+}
+
+async function marketAdminCmd(payload) {
+    try {
+        await fetch('/api/cmd/market_admin', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+    } catch (err) { /* status dot already reflects connectivity */ }
+    setTimeout(refreshMarketAdmin, 600);
+}
+
+function marketAdminGrant() {
+    const username = maVal('maGrantUser').trim();
+    const amount = +maVal('maGrantAmount');
+    if (!username || !amount) return;
+    marketAdminCmd({ action: 'grantLP', username, amount, note: 'Web panel' });
+    document.getElementById('maGrantAmount').value = '';
+}
+
+// Tier editors. All three kinds are (cost + one extra field) rows, so they
+// share one renderer rather than three near-identical blocks.
+const MA_TIER_KINDS = {
+    storage:  { key: 'storageTiers',  field: 'extra',   label: '+kg',  action: 'setStorageTier' },
+    discount: { key: 'discountTiers', field: 'percent', label: 'oran', action: 'setDiscountTier' },
+    freezer:  { key: 'freezerTiers',  field: null,      label: '',     action: 'setFreezerTier' },
+};
+
+function renderMarketTiers() {
+    const host = document.getElementById('maTierRows');
+    if (!host) return;
+    const kind = document.getElementById('maTierKind').value;
+    const spec = MA_TIER_KINDS[kind];
+    const tiers = (marketAdminSettings && marketAdminSettings[spec.key]) || [];
+
+    // Don't redraw while a tier input has focus - that would wipe the edit.
+    if (host.contains(document.activeElement)) return;
+
+    host.innerHTML = '';
+    tiers.forEach((tier, i) => {
+        const n = i + 1;
+        const row = document.createElement('div');
+        row.className = 'controls-row';
+        const extraInput = spec.field
+            ? `<input type="number" class="ma-input" id="maTierExtra${n}" value="${tier[spec.field] ?? ''}" step="any" title="${spec.label}" style="max-width:80px">`
+            : '';
+        row.innerHTML = `
+            <div class="ma-tier-label">Kademe ${n}</div>
+            <input type="number" class="ma-input" id="maTierCost${n}" value="${tier.cost ?? ''}" step="1000" title="Maliyet (LP)">
+            ${extraInput}
+            <button class="tp-btn" title="Kaydet" onclick="saveMarketTier('${kind}', ${n})"><svg class="ico" viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M2 1h9.5L14 3.5V14a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1zm1 1v3h7V2H3zm1 6v5h6V8H4z"/></svg></button>
+        `;
+        host.appendChild(row);
+    });
+    if (tiers.length === 0) {
+        host.innerHTML = '<div class="empty">Kademe verisi yok.</div>';
+    }
+}
+
+function saveMarketTier(kind, n) {
+    const spec = MA_TIER_KINDS[kind];
+    const payload = { action: spec.action, tier: n, cost: +maVal('maTierCost' + n) };
+    if (spec.field) payload[spec.field] = +maVal('maTierExtra' + n);
+    marketAdminCmd(payload);
+}
+
+async function refreshMarketAdmin() {
+    try {
+        const res = await fetch('/api/state/market_admin');
+        const data = await res.json();
+        const waiting = document.getElementById('marketAdminWaiting');
+        const body = document.getElementById('marketAdminBody');
+        if (!waiting || !body) return;
+
+        const s = data && data.settings;
+        if (!data || !data.isAdmin || !s) {
+            waiting.style.display = 'block';
+            body.style.display = 'none';
+            return;
+        }
+        waiting.style.display = 'none';
+        body.style.display = '';
+        marketAdminSettings = s;
+
+        maSet('maEnabled', s.marketEnabled);
+        maSet('maStartingBalance', s.startingBalance);
+        maSet('maCommission', s.commissionRate);
+        maSet('maRestockDays', s.restockDays);
+        maSet('maElectricity', s.electricityPricePerDay);
+        maSet('maRequireLicense', s.requireSalesLicense);
+        maSet('maLicensePrice', s.salesLicensePrice);
+        maSet('maProductInfoPrice', s.productInfoPrice);
+        maSet('maRequireSkill', s.requireCategorySkill);
+        maSet('maSkillLevel', s.categorySkillMinLevel);
+        renderMarketTiers();
+    } catch (err) {
+        // status dot already reflects bridge/game connectivity
+    }
+}
+
+loadFeatures().then(() => refreshSpectate().then(refresh));
+refreshDamageLog();
+refreshCameraman();
+refreshHideAdminTag();
+refreshMarket();
+refreshMarketAdmin();
+refreshPermaDeath();
+refreshWelcome();
+setInterval(async () => { await refreshSpectate(); refresh(); }, 2000);
+setInterval(refreshDamageLog, 2000);
+setInterval(refreshCameraman, 2000);
+setInterval(refreshHideAdminTag, 2000);
+setInterval(refreshMarket, 2000);
+setInterval(refreshMarketAdmin, 2000);
+setInterval(refreshPermaDeath, 5000);
+setInterval(refreshWelcome, 3000);
+setInterval(loadFeatures, 10000);
+</script>
+</body>
+</html>
