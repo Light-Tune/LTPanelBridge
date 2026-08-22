@@ -97,8 +97,27 @@ The repository includes `.github/workflows/release.yml`. Pushing a version tag
 such as `v1.1.0` builds `LTPanelBridge.zip`, creates a SHA-256 checksum, and
 publishes both files to GitHub Releases.
 
+Release preparation and publishing steps are documented in
+[`docs/RELEASING.md`](docs/RELEASING.md). Release-specific notes are stored in
+[`docs/releases/`](docs/releases/).
+
+## Repository structure
+
+```text
+LTPanelBridge/
+├─ .github/workflows/   GitHub Actions release automation
+├─ docs/                Maintainer and release documentation
+├─ public/              Browser panel and interface translations
+├─ tools/               Maintainer-only helper scripts
+├─ server.js            Local bridge server
+└─ start-lt-panel.bat   Windows launcher
+```
+
 ## Security
 
 See [SECURITY.md](SECURITY.md) for the supported version and private reporting
-guidance. The package is currently marked `UNLICENSED`; source visibility does
-not grant redistribution or modification rights.
+guidance.
+
+## License
+
+LT Panel Bridge is released under the [MIT License](LICENSE).
